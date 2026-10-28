@@ -1,4 +1,8 @@
+import { existsSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { cleanupSingleInstance, ensureSingleInstance } from '../src/index.js';
 import { loadConfig } from '../src/config.js';
 
 const originalEnv = { ...process.env };
@@ -90,6 +94,53 @@ describe('loadConfig', () => {
     expect(config.nodeEnv).toBe('production');
     expect(config.telegramMode).toBe('live');
     expect(config.logLevel).toBe('info');
+  });
+
+  it('tidak gagal pada live ketika sesi kosong dan langsung bisa login', () => {
+    setBaseEnvironment({
+      NODE_ENV: 'production',
+      TELEGRAM_MODE: 'live',
+      TELEGRAM_API_ID: '123456',
+      TELEGRAM_API_HASH: 'test_hash',
+      TELEGRAM_SESSION: '',
+      TELEGRAM_CHAT_ID: '987654321',
+    });
+
+    const config = loadConfig();
+
+    expect(config.telegramMode).toBe('live');
+    expect(config.apiId).toBe(123456);
+    expect(config.apiHash).toBe('test_hash');
+    expect(config.telegramChatId).toBe(987654321);
+    expect(config.telegramSession).toBeUndefined();
+  });
+
+  it('membersihkan lock file saat proses dihentikan', () => {
+    const lockFilePath = ensureSingleInstance('test-bot-token');
+
+    expect(existsSync(lockFilePath)).toBe(true);
+
+    cleanupSingleInstance();
+
+    expect(existsSync(lockFilePath)).toBe(false);
+  });
+
+  it('mengabaikan lock file stale dari proses yang sudah mati', () => {
+    const lockFilePath = path.join(tmpdir(), 'tele-translator-testbotlock.lock');
+    writeFileSync(lockFilePath, '999999999\n', 'utf8');
+
+    expect(() => ensureSingleInstance('test-bot-lock')).not.toThrow();
+    expect(existsSync(lockFilePath)).toBe(true);
+
+    cleanupSingleInstance();
+  });
+
+  it('bisa dinonaktifkan lewat env DO untuk kebutuhan lokal / debug', () => {
+    process.env.DISABLE_SINGLE_INSTANCE = 'true';
+
+    expect(() => ensureSingleInstance('test-bot-env')).not.toThrow();
+
+    delete process.env.DISABLE_SINGLE_INSTANCE;
   });
 
   it('gagal pada live dengan API ID atau hash yang hilang', () => {

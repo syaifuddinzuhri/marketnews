@@ -131,10 +131,6 @@ export function loadConfig(): AppConfig {
     throw new Error('Mode live membutuhkan TELEGRAM_CHAT_ID yang valid untuk pengiriman hasil ke chat pribadi.');
   }
 
-  if (!resolvedSession) {
-    throw new Error('Mode live membutuhkan sesi GramJS yang valid. Isi TELEGRAM_SESSION atau pastikan file sesi lokal tersedia.');
-  }
-
   return {
     ...baseConfig,
     apiId,

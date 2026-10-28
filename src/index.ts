@@ -1,6 +1,7 @@
-import { closeSync, openSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { ChatRegistrationStore } from './services/chat-registration.js';
 import { MessageProcessor, chunkTelegramMessage } from './services/message-processor.js';
@@ -10,22 +11,87 @@ import { createUserClient } from './telegram/user-client.js';
 import { MyMemoryTranslator } from './translation/mymemory-translator.js';
 import { createLogger } from './utils/logger.js';
 
-function ensureSingleInstance(botToken: string): void {
+let activeLockFilePath: string | undefined;
+
+export function cleanupSingleInstance(): void {
+  if (!activeLockFilePath) {
+    return;
+  }
+
+  try {
+    if (existsSync(activeLockFilePath)) {
+      unlinkSync(activeLockFilePath);
+    }
+  } catch {
+    // Lock file may already be cleaned up or may not exist.
+  } finally {
+    activeLockFilePath = undefined;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function ensureSingleInstance(botToken: string): string {
+  const disableSingleInstance = ['1', 'true', 'yes', 'on'].includes((process.env.DISABLE_SINGLE_INSTANCE ?? '').toLowerCase());
   const tokenTag = botToken.replace(/[^a-zA-Z0-9]/g, '') || 'default';
   const lockFilePath = path.join(tmpdir(), `tele-translator-${tokenTag}.lock`);
 
+  if (disableSingleInstance) {
+    return lockFilePath;
+  }
+
+  if (existsSync(lockFilePath)) {
+    try {
+      const previousPid = Number(readFileSync(lockFilePath, 'utf8').trim());
+      if (isProcessAlive(previousPid)) {
+        throw new Error('Instans lain untuk bot Telegram ini sudah aktif. Hentikan proses lama sebelum menjalankan ulang.');
+      }
+      unlinkSync(lockFilePath);
+    } catch {
+      if (existsSync(lockFilePath)) {
+        try {
+          unlinkSync(lockFilePath);
+        } catch {
+          // Ignore stale lock cleanup failure.
+        }
+      }
+    }
+  }
+
   try {
     const fileDescriptor = openSync(lockFilePath, 'wx');
+    writeFileSync(fileDescriptor, `${process.pid}\n`, 'utf8');
     closeSync(fileDescriptor);
+    activeLockFilePath = lockFilePath;
 
-    process.on('exit', () => {
-      try {
-        unlinkSync(lockFilePath);
-      } catch {
-        // File lock may already be removed by another process shutdown.
+    const cleanup = () => {
+      if (activeLockFilePath === lockFilePath) {
+        cleanupSingleInstance();
       }
+    };
+
+    process.once('exit', cleanup);
+    process.once('SIGINT', () => {
+      cleanup();
+      process.exit(0);
     });
-    return;
+    process.once('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+
+    return lockFilePath;
   } catch {
     throw new Error('Instans lain untuk bot Telegram ini sudah aktif. Hentikan proses lama sebelum menjalankan ulang.');
   }
@@ -163,7 +229,11 @@ async function main(): Promise<void> {
   await runLiveMode();
 }
 
-main().catch((error) => {
-  console.error('Aplikasi gagal berjalan:', error);
-  process.exit(1);
-});
+const isDirectExecution = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+
+if (isDirectExecution) {
+  main().catch((error) => {
+    console.error('Aplikasi gagal berjalan:', error);
+    process.exit(1);
+  });
+}
